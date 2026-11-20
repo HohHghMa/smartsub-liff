@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartSub · แจ้งลา</title>
+<style>
+  :root { --brand: #5B3FBF; --soft: #EEEAFB; --text: #222; --sub: #6b6b6b; --bad: #C0392B; --line: #ddd; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Leelawadee UI", "Sarabun", Tahoma, sans-serif; color: var(--text); background: #fafafa; }
+  header { background: var(--brand); color: #fff; padding: 16px; }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; font-size: 13px; opacity: .85; }
+  main { padding: 16px; max-width: 520px; margin: 0 auto; }
+  fieldset { border: 0; padding: 0; margin: 0 0 18px; }
+  legend, label.title { display: block; font-weight: 600; margin-bottom: 8px; }
+  input[type=date], select, textarea { width: 100%; font: inherit; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  textarea { resize: vertical; min-height: 64px; }
+  .periods { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .periods label { display: flex; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .periods input { width: 20px; height: 20px; accent-color: var(--brand); }
+  .periods small { color: var(--sub); display: block; }
+  .preview { background: var(--soft); border-radius: 8px; padding: 10px; font-size: 13px; color: var(--sub); word-break: break-all; }
+  button { width: 100%; padding: 14px; font: inherit; font-weight: 600; border: 0; border-radius: 10px; background: var(--brand); color: #fff; }
+  button:disabled { opacity: .5; }
+  .error { color: var(--bad); font-size: 14px; margin-top: 6px; min-height: 1em; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>แจ้งลา</h1>
+  <p>SmartSub · ระบบจัดการอาจารย์สอนแทน</p>
+</header>
+<main>
+  <p id="status">กำลังโหลด…</p>
+  <form id="form" class="hidden" novalidate>
+    <fieldset>
+      <label class="title" for="date">วันที่ลา</label>
+      <input type="date" id="date" required>
+    </fieldset>
+    <fieldset>
+      <legend>คาบที่ลา</legend>
+      <div class="periods" id="periods"></div>
+    </fieldset>
+    <fieldset>
+      <label class="title" for="reason">เหตุผล</label>
+      <select id="reason">
+        <option>ลาป่วย</option>
+        <option>ลากิจ</option>
+        <option>ไปราชการ/อบรม</option>
+        <option>ลาพักผ่อน</option>
+        <option value="">อื่น ๆ (ระบุ)</option>
+      </select>
+      <textarea id="detail" maxlength="150" placeholder="รายละเอียดเพิ่มเติม (ไม่บังคับ)" style="margin-top:8px"></textarea>
+    </fieldset>
+    <fieldset>
+      <legend>ข้อความที่จะส่ง</legend>
+      <div class="preview" id="preview">-</div>
+    </fieldset>
+    <button type="submit" id="submit">ส่งคำขอลา</button>
+    <div class="error" id="error" role="alert"></div>
+  </form>
+</main>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+// ใส่ LIFF ID ของคุณ (จาก LINE Developers → LINE Login channel → LIFF)
+const LIFF_ID = 'YOUR-LIFF-ID';
+
+const $ = (id) => document.getElementById(id);
+const bkkToday = () => new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+const addDays = (iso, n) => new Date(Date.parse(iso + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+
+// periods มาจาก URL ที่ bot สร้าง: ?periods=1|08:00|09:00,2|09:00|10:00,...
+function readPeriods() {
+  const raw = new URLSearchParams(location.search).get('periods');
+  const list = (raw || '').split(',').map((s) => s.split('|')).filter((p) => /^\d+$/.test(p[0]));
+  return list.length ? list : [1, 2, 3, 4, 5, 6, 7].map((n) => [String(n)]);
+}
+
+function buildText() {
+  const date = $('date').value;
+  const ps = [...document.querySelectorAll('#periods input:checked')].map((i) => i.value);
+  const reason = [$('reason').value, $('detail').value].map((s) => s.trim().replace(/\s+/g, ' ')).filter(Boolean).join(' ');
+  return { date, ps, reason, text: `#ลา ${date || '?'} คาบ ${ps.join(',') || '?'} เหตุผล ${reason || '?'}` };
+}
+
+function validate({ date, ps, reason }) {
+  if (!date) return 'กรุณาเลือกวันที่';
+  if (date < bkkToday()) return 'ไม่สามารถแจ้งลาย้อนหลังได้';
+  if (date > addDays(bkkToday(), 90)) return 'แจ้งลาล่วงหน้าได้ไม่เกิน 90 วัน';
+  if (!ps.length) return 'กรุณาเลือกอย่างน้อย 1 คาบ';
+  if (!reason) return 'กรุณาระบุเหตุผล';
+  return '';
+}
+
+function render() {
+  const today = bkkToday();
+  Object.assign($('date'), { min: today, max: addDays(today, 90), value: addDays(today, 1) });
+  $('periods').innerHTML = '';
+  for (const [n, start, end] of readPeriods()) {
+    const l = document.createElement('label');
+    l.innerHTML = `<input type="checkbox" value="${n}"><span>คาบ ${n}<small>${start && end ? `${start}–${end}` : ''}</small></span>`;
+    $('periods').appendChild(l);
+  }
+  const update = () => { $('preview').textContent = buildText().text; $('error').textContent = ''; };
+  $('form').addEventListener('input', update);
+  $('form').addEventListener('change', update);
+  update();
+  $('form').classList.remove('hidden');
+}
+
+async function submit(ev) {
+  ev.preventDefault();
+  const data = buildText();
+  const err = validate(data);
+  if (err) { $('error').textContent = err; return; }
+  $('submit').disabled = true;
+  try {
+    await liff.sendMessages([{ type: 'text', text: data.text }]);
+    liff.closeWindow();
+  } catch (e) {
+    $('submit').disabled = false;
+    $('error').textContent = 'ส่งไม่สำเร็จ: ' + (e.message || e) + ' — คัดลอกข้อความด้านบนไปส่งในแชท SmartSub แทนได้';
+  }
+}
+
+(async () => {
+  try {
+    await liff.init({ liffId: LIFF_ID });
+    if (!liff.isInClient()) {
+      $('status').textContent = 'กรุณาเปิดหน้านี้จากเมนู "แจ้งลา" ในแชท SmartSub บนแอป LINE';
+      return;
+    }
+    $('status').classList.add('hidden');
+    render();
+    $('form').addEventListener('submit', submit);
+  } catch (e) {
+    $('status').textContent = 'โหลดไม่สำเร็จ: ' + (e.message || e);
+  }
+})();
+</script>
+</body>
+</html>
